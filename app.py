@@ -18,9 +18,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 
-# ------------------------------------------------------------
-# Page configuration
-# ------------------------------------------------------------
+# ============================================================
+# APPLICATION SETTINGS
+# ============================================================
+
+DATASET_PATH = "car_data.csv.zip"
+CURRENT_YEAR = datetime.now().year
 
 st.set_page_config(
     page_title="Used-Car Price Predictor",
@@ -29,40 +32,96 @@ st.set_page_config(
 )
 
 st.title("🚗 Used-Car Price Prediction")
+
 st.write(
-    "Enter the vehicle information to estimate its selling price."
+    """
+    This machine-learning application estimates a used car's selling
+    price using its brand, manufacturing year, kilometers driven,
+    fuel type, transmission, seller type, and ownership history.
+    """
 )
 
 
-# ------------------------------------------------------------
-# Load CSV 
-# ------------------------------------------------------------
+# ============================================================
+# LOAD THE DATASET
+# ============================================================
 
 @st.cache_data
-def load_and_clean_data():
-   zip_path = "car_data.csv"
-    @st.cache_data
-def load_and_clean_data():
-    data = pd.read_csv(
-        "car_data.csv.zip",
-        compression=None
-    )
+def load_dataset(file_path):
+    """
+    Load the dataset.
 
-    # Clean column names.
+    This function works when car_data.csv.zip is:
+    1. A real ZIP file containing a CSV file, or
+    2. A normal CSV file with .zip accidentally added to its name.
+    """
+
+    if zipfile.is_zipfile(file_path):
+
+        with zipfile.ZipFile(file_path, "r") as zip_file:
+
+            csv_files = [
+                file_name
+                for file_name in zip_file.namelist()
+                if file_name.lower().endswith(".csv")
+            ]
+
+            if not csv_files:
+                raise ValueError(
+                    "The ZIP file does not contain a CSV file."
+                )
+
+            with zip_file.open(csv_files[0]) as csv_file:
+                data = pd.read_csv(csv_file)
+
+    else:
+        data = pd.read_csv(
+            file_path,
+            compression=None
+        )
+
+    return data
+
+
+# ============================================================
+# CLEAN THE DATASET
+# ============================================================
+
+@st.cache_data
+def clean_dataset(data):
+    """Clean the dataset and create machine-learning features."""
+
+    data = data.copy()
+
+    # Standardize column names.
     data.columns = (
         data.columns
         .str.strip()
         .str.lower()
         .str.replace(" ", "_")
+        .str.replace("-", "_")
     )
 
-    # Clean column names.
-    data.columns = (
-        data.columns
-        .str.strip()
-        .str.lower()
-        .str.replace(" ", "_")
-    )
+    # Rename common alternative column names.
+    alternative_names = {
+        "car_name": "name",
+        "vehicle_name": "name",
+        "model_name": "name",
+        "price": "selling_price",
+        "sellingprice": "selling_price",
+        "selling_price_(inr)": "selling_price",
+        "kms_driven": "km_driven",
+        "kilometers_driven": "km_driven",
+        "kilometres_driven": "km_driven",
+        "mileage_driven": "km_driven",
+        "seller": "seller_type",
+        "seller_type_": "seller_type",
+        "transmission_type": "transmission",
+        "ownership": "owner",
+        "owner_type": "owner"
+    }
+
+    data = data.rename(columns=alternative_names)
 
     required_columns = [
         "name",
@@ -76,48 +135,95 @@ def load_and_clean_data():
     ]
 
     missing_columns = [
-        column for column in required_columns
+        column
+        for column in required_columns
         if column not in data.columns
     ]
 
     if missing_columns:
         raise ValueError(
-            f"Missing dataset columns: {missing_columns}. "
-            f"Available columns: {data.columns.tolist()}"
+            "The following required columns are missing: "
+            f"{missing_columns}. "
+            f"Available columns are: {data.columns.tolist()}"
         )
 
     # Remove duplicate records.
     data = data.drop_duplicates().copy()
 
-    # Convert important columns to numbers.
-    for column in ["year", "selling_price", "km_driven"]:
+    # Convert necessary columns to numbers.
+    numerical_columns = [
+        "year",
+        "selling_price",
+        "km_driven"
+    ]
+
+    for column in numerical_columns:
+
+        if data[column].dtype == "object":
+            data[column] = (
+                data[column]
+                .astype(str)
+                .str.replace(",", "", regex=False)
+                .str.replace("₹", "", regex=False)
+                .str.replace("$", "", regex=False)
+                .str.strip()
+            )
+
         data[column] = pd.to_numeric(
             data[column],
             errors="coerce"
         )
 
-    # Remove records containing invalid required values.
+    # Clean text columns.
+    text_columns = [
+        "name",
+        "fuel",
+        "seller_type",
+        "transmission",
+        "owner"
+    ]
+
+    for column in text_columns:
+        data[column] = (
+            data[column]
+            .astype(str)
+            .str.strip()
+        )
+
+        data[column] = data[column].replace({
+            "": np.nan,
+            "nan": np.nan,
+            "None": np.nan
+        })
+
+    # Remove rows missing essential information.
     data = data.dropna(
         subset=[
             "name",
             "year",
             "selling_price",
-            "km_driven"
+            "km_driven",
+            "fuel",
+            "seller_type",
+            "transmission",
+            "owner"
         ]
     )
 
-    current_year = datetime.now().year
-
+    # Remove impossible numerical values.
     data = data[
         (data["selling_price"] > 0) &
         (data["km_driven"] >= 0) &
         (data["year"] >= 1980) &
-        (data["year"] <= current_year)
+        (data["year"] <= CURRENT_YEAR)
     ].copy()
 
-    # Create useful machine-learning features.
-    data["car_age"] = current_year - data["year"]
+    # Create car age.
+    data["car_age"] = (
+        CURRENT_YEAR - data["year"]
+    )
 
+    # Extract brand from the first word of the car name.
     data["brand"] = (
         data["name"]
         .astype(str)
@@ -126,10 +232,11 @@ def load_and_clean_data():
         .str[0]
     )
 
-    # Keep only the features needed for this project.
+    # Keep only the columns used by the application.
     data = data[
         [
             "brand",
+            "year",
             "car_age",
             "km_driven",
             "fuel",
@@ -138,19 +245,39 @@ def load_and_clean_data():
             "owner",
             "selling_price"
         ]
-    ]
+    ].copy()
+
+    if len(data) < 20:
+        raise ValueError(
+            "The dataset does not contain enough valid records "
+            "after cleaning. At least 20 records are required."
+        )
 
     return data
 
 
-# ------------------------------------------------------------
-# Train the machine-learning model
-# ------------------------------------------------------------
+# ============================================================
+# TRAIN THE MACHINE-LEARNING MODEL
+# ============================================================
 
 @st.cache_resource
 def train_model(data):
-    X = data.drop(columns=["selling_price"])
-    y = data["selling_price"]
+    """Train and evaluate a Random Forest regression model."""
+
+    feature_columns = [
+        "brand",
+        "car_age",
+        "km_driven",
+        "fuel",
+        "seller_type",
+        "transmission",
+        "owner"
+    ]
+
+    target_column = "selling_price"
+
+    X = data[feature_columns]
+    y = data[target_column]
 
     numerical_features = [
         "car_age",
@@ -165,6 +292,7 @@ def train_model(data):
         "owner"
     ]
 
+    # Numerical preprocessing.
     numerical_pipeline = Pipeline([
         (
             "imputer",
@@ -172,6 +300,7 @@ def train_model(data):
         )
     ])
 
+    # Categorical preprocessing.
     categorical_pipeline = Pipeline([
         (
             "imputer",
@@ -179,23 +308,26 @@ def train_model(data):
         ),
         (
             "encoder",
-            OneHotEncoder(handle_unknown="ignore")
+            OneHotEncoder(
+                handle_unknown="ignore"
+            )
         )
     ])
 
     preprocessing = ColumnTransformer([
         (
-            "numbers",
+            "numerical",
             numerical_pipeline,
             numerical_features
         ),
         (
-            "categories",
+            "categorical",
             categorical_pipeline,
             categorical_features
         )
     ])
 
+    # Random Forest regression pipeline.
     model = Pipeline([
         (
             "preprocessing",
@@ -205,12 +337,16 @@ def train_model(data):
             "regressor",
             RandomForestRegressor(
                 n_estimators=200,
+                max_depth=None,
+                min_samples_split=2,
+                min_samples_leaf=1,
                 random_state=42,
                 n_jobs=-1
             )
         )
     ])
 
+    # Divide data into training and testing sets.
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
@@ -218,127 +354,231 @@ def train_model(data):
         random_state=42
     )
 
-    model.fit(X_train, y_train)
+    # Train the model.
+    model.fit(
+        X_train,
+        y_train
+    )
 
-    predictions = model.predict(X_test)
+    # Test predictions.
+    test_predictions = model.predict(
+        X_test
+    )
+
+    # Calculate regression metrics.
+    mae = mean_absolute_error(
+        y_test,
+        test_predictions
+    )
+
+    rmse = np.sqrt(
+        mean_squared_error(
+            y_test,
+            test_predictions
+        )
+    )
+
+    r2 = r2_score(
+        y_test,
+        test_predictions
+    )
 
     metrics = {
-        "MAE": mean_absolute_error(
-            y_test,
-            predictions
-        ),
-        "RMSE": np.sqrt(
-            mean_squared_error(
-                y_test,
-                predictions
-            )
-        ),
-        "R2": r2_score(
-            y_test,
-            predictions
-        )
+        "MAE": mae,
+        "RMSE": rmse,
+        "R2": r2
     }
 
     comparison = pd.DataFrame({
-        "Actual Price": y_test.values,
-        "Predicted Price": predictions
+        "Actual Price": y_test.reset_index(drop=True),
+        "Predicted Price": test_predictions
     })
+
+    comparison["Absolute Error"] = abs(
+        comparison["Actual Price"] -
+        comparison["Predicted Price"]
+    )
 
     return model, metrics, comparison
 
 
-# ------------------------------------------------------------
-# Load data and model safely
-# ------------------------------------------------------------
+# ============================================================
+# START THE APPLICATION
+# ============================================================
 
 try:
-    df = load_and_clean_data()
-    model, metrics, comparison = train_model(df)
+
+    raw_data = load_dataset(
+        DATASET_PATH
+    )
+
+    df = clean_dataset(
+        raw_data
+    )
+
+    model, metrics, comparison = train_model(
+        df
+    )
+
+except FileNotFoundError:
+
+    st.error(
+        f"Dataset file '{DATASET_PATH}' was not found. "
+        "Make sure it is in the same folder as app.py."
+    )
+
+    st.stop()
 
 except Exception as error:
-    st.error(f"Application error: {error}")
+
+    st.error(
+        f"Application error: {error}"
+    )
+
     st.stop()
 
 
-# ------------------------------------------------------------
-# Sidebar
-# ------------------------------------------------------------
+# ============================================================
+# SIDEBAR NAVIGATION
+# ============================================================
+
+st.sidebar.header("Navigation")
 
 page = st.sidebar.radio(
-    "Choose a page",
+    "Select a page",
     [
         "Predict Price",
         "Model Performance",
-        "View Dataset"
+        "Dataset"
     ]
 )
 
-st.sidebar.write(f"Valid vehicle records: {len(df):,}")
-st.sidebar.write("Model: Random Forest Regression")
+st.sidebar.markdown("---")
+
+st.sidebar.write(
+    f"Valid vehicle records: {len(df):,}"
+)
+
+st.sidebar.write(
+    f"Number of brands: {df['brand'].nunique()}"
+)
+
+st.sidebar.write(
+    "Model: Random Forest Regressor"
+)
 
 
-# ------------------------------------------------------------
-# Price prediction page
-# ------------------------------------------------------------
+# ============================================================
+# PRICE-PREDICTION PAGE
+# ============================================================
 
 if page == "Predict Price":
 
-    st.header("Enter the Vehicle Information")
+    st.header("Predict a Used Car's Price")
+
+    st.write(
+        "Enter the car information below."
+    )
 
     left_column, right_column = st.columns(2)
 
+    brands = sorted(
+        df["brand"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    fuel_types = sorted(
+        df["fuel"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    seller_types = sorted(
+        df["seller_type"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    transmission_types = sorted(
+        df["transmission"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    owner_types = sorted(
+        df["owner"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
     with left_column:
-        brand = st.selectbox(
-            "Brand",
-            sorted(df["brand"].unique())
+
+        selected_brand = st.selectbox(
+            "Car brand",
+            brands
         )
 
-        year = st.number_input(
+        selected_year = st.number_input(
             "Manufacturing year",
             min_value=1980,
-            max_value=datetime.now().year,
-            value=datetime.now().year - 5,
+            max_value=CURRENT_YEAR,
+            value=max(1980, CURRENT_YEAR - 5),
             step=1
         )
 
-        km_driven = st.number_input(
+        selected_km = st.number_input(
             "Kilometers driven",
             min_value=0,
-            value=50000,
-            step=1000
+            max_value=2_000_000,
+            value=50_000,
+            step=1_000
         )
 
-        fuel = st.selectbox(
+        selected_fuel = st.selectbox(
             "Fuel type",
-            sorted(df["fuel"].unique())
+            fuel_types
         )
 
     with right_column:
-        transmission = st.selectbox(
+
+        selected_transmission = st.selectbox(
             "Transmission",
-            sorted(df["transmission"].unique())
+            transmission_types
         )
 
-        seller_type = st.selectbox(
+        selected_seller = st.selectbox(
             "Seller type",
-            sorted(df["seller_type"].unique())
+            seller_types
         )
 
-        owner = st.selectbox(
-            "Owner",
-            sorted(df["owner"].unique())
+        selected_owner = st.selectbox(
+            "Ownership",
+            owner_types
         )
 
-    car_age = datetime.now().year - year
+    selected_car_age = (
+        CURRENT_YEAR - selected_year
+    )
 
-    input_data = pd.DataFrame([{
-        "brand": brand,
-        "car_age": car_age,
-        "km_driven": km_driven,
-        "fuel": fuel,
-        "seller_type": seller_type,
-        "transmission": transmission,
-        "owner": owner
+    prediction_input = pd.DataFrame([{
+        "brand": selected_brand,
+        "car_age": selected_car_age,
+        "km_driven": selected_km,
+        "fuel": selected_fuel,
+        "seller_type": selected_seller,
+        "transmission": selected_transmission,
+        "owner": selected_owner
     }])
 
     if st.button(
@@ -346,55 +586,99 @@ if page == "Predict Price":
         type="primary",
         use_container_width=True
     ):
-        predicted_price = model.predict(input_data)[0]
-        predicted_price = max(0, predicted_price)
 
-        st.success(
-            f"Estimated selling price: {predicted_price:,.2f}"
-        )
+        try:
 
-        st.info(
-            "This is a machine-learning estimate and not an "
-            "official vehicle valuation."
-        )
+            predicted_price = model.predict(
+                prediction_input
+            )[0]
+
+            predicted_price = max(
+                0,
+                predicted_price
+            )
+
+            st.success(
+                f"Estimated selling price: "
+                f"{predicted_price:,.2f}"
+            )
+
+            st.subheader(
+                "Vehicle Information"
+            )
+
+            input_summary = pd.DataFrame({
+                "Feature": [
+                    "Brand",
+                    "Manufacturing year",
+                    "Car age",
+                    "Kilometers driven",
+                    "Fuel type",
+                    "Transmission",
+                    "Seller type",
+                    "Ownership"
+                ],
+                "Value": [
+                    selected_brand,
+                    selected_year,
+                    selected_car_age,
+                    f"{selected_km:,}",
+                    selected_fuel,
+                    selected_transmission,
+                    selected_seller,
+                    selected_owner
+                ]
+            })
+
+            st.dataframe(
+                input_summary,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.info(
+                "This is a machine-learning estimate. "
+                "It is not an official vehicle valuation."
+            )
+
+        except Exception as error:
+
+            st.error(
+                f"Prediction error: {error}"
+            )
 
 
-# ------------------------------------------------------------
-# Model performance page
-# ------------------------------------------------------------
+# ============================================================
+# MODEL-PERFORMANCE PAGE
+# ============================================================
 
 elif page == "Model Performance":
 
-    st.header("Model Performance")
+    st.header(
+        "Machine-Learning Model Performance"
+    )
 
-    column1, column2, column3 = st.columns(3)
+    metric_column1, metric_column2, metric_column3 = (
+        st.columns(3)
+    )
 
-    column1.metric(
-        "MAE",
+    metric_column1.metric(
+        "Mean Absolute Error",
         f"{metrics['MAE']:,.2f}"
     )
 
-    column2.metric(
-        "RMSE",
+    metric_column2.metric(
+        "Root Mean Squared Error",
         f"{metrics['RMSE']:,.2f}"
     )
 
-    column3.metric(
+    metric_column3.metric(
         "R² Score",
         f"{metrics['R2']:.4f}"
     )
 
-    st.subheader("Sample Test Predictions")
-
-    comparison["Absolute Error"] = abs(
-        comparison["Actual Price"] -
-        comparison["Predicted Price"]
-    )
-
-    st.dataframe(
-        comparison.head(30),
-        use_container_width=True,
-        hide_index=True
+    st.subheader(
+        "Actual Prices Compared with Predicted Prices"
     )
 
     st.scatter_chart(
@@ -403,37 +687,94 @@ elif page == "Model Performance":
         y="Predicted Price"
     )
 
-
-# ------------------------------------------------------------
-# Dataset page
-# ------------------------------------------------------------
-
-elif page == "View Dataset":
-
-    st.header("Cleaned Dataset")
-
-    st.write(f"Number of records: {len(df):,}")
-
-    st.dataframe(
-        df,
-        use_container_width=True
+    st.subheader(
+        "Sample Test Predictions"
     )
 
-    st.subheader("Dataset Statistics")
+    st.dataframe(
+        comparison.head(30),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.write(
+        """
+        **MAE** represents the average prediction error.
+
+        **RMSE** gives a larger penalty to large prediction errors.
+
+        **R²** measures how much of the price variation the model
+        explains. A value closer to 1 is generally better.
+        """
+    )
+
+
+# ============================================================
+# DATASET PAGE
+# ============================================================
+
+elif page == "Dataset":
+
+    st.header(
+        "Cleaned Used-Car Dataset"
+    )
+
+    information_column1, information_column2 = (
+        st.columns(2)
+    )
+
+    information_column1.metric(
+        "Number of Records",
+        f"{len(df):,}"
+    )
+
+    information_column2.metric(
+        "Number of Brands",
+        df["brand"].nunique()
+    )
+
+    st.subheader(
+        "Dataset Preview"
+    )
+
+    st.dataframe(
+        df.head(100),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.subheader(
+        "Numerical Statistics"
+    )
 
     st.dataframe(
         df.describe(),
         use_container_width=True
     )
 
+    st.subheader(
+        "Cars by Brand"
+    )
 
-# ------------------------------------------------------------
-# Footer
-# ------------------------------------------------------------
+    brand_counts = (
+        df["brand"]
+        .value_counts()
+        .head(15)
+    )
+
+    st.bar_chart(
+        brand_counts
+    )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
 
 st.markdown("---")
 
 st.caption(
-    "Created with Python, Pandas, scikit-learn and Streamlit"
+    "Used-Car Price Prediction | "
+    "Python, Pandas, scikit-learn, Random Forest and Streamlit"
 )
 
