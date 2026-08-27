@@ -40,8 +40,7 @@ st.write(
 
 @st.cache_data
 def load_and_clean_data():
-    zip_path = "car_data.csv.zip"
-
+   zip_path = "car_data.csv.zip"
     with zipfile.ZipFile(zip_path, "r") as zip_file:
         csv_files = [
             name for name in zip_file.namelist()
@@ -54,7 +53,10 @@ def load_and_clean_data():
             )
 
         with zip_file.open(csv_files[0]) as csv_file:
-            data = pd.read_csv(csv_file)
+            data = pd.read_csv(
+    "car_data.csv.zip",
+    compression=None
+)
 
     # Clean column names.
     data.columns = (
