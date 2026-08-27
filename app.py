@@ -35,28 +35,26 @@ st.write(
 
 
 # ------------------------------------------------------------
-# Load CSV from the ZIP file
+# Load CSV 
 # ------------------------------------------------------------
 
 @st.cache_data
 def load_and_clean_data():
-   zip_path = "car_data.csv.zip"
-    with zipfile.ZipFile(zip_path, "r") as zip_file:
-        csv_files = [
-            name for name in zip_file.namelist()
-            if name.lower().endswith(".csv")
-        ]
+   zip_path = "car_data.csv"
+    @st.cache_data
+def load_and_clean_data():
+    data = pd.read_csv(
+        "car_data.csv.zip",
+        compression=None
+    )
 
-        if not csv_files:
-            raise ValueError(
-                "No CSV file was found inside car_data.csv.zip."
-            )
-
-        with zip_file.open(csv_files[0]) as csv_file:
-            data = pd.read_csv(
-    "car_data.csv.zip",
-    compression=None
-)
+    # Clean column names.
+    data.columns = (
+        data.columns
+        .str.strip()
+        .str.lower()
+        .str.replace(" ", "_")
+    )
 
     # Clean column names.
     data.columns = (
